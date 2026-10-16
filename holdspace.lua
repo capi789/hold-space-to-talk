@@ -6,7 +6,7 @@
 -- Updates itself from GitHub. Log: ~/.hammerspoon/hold-space-to-talk/log.txt
 -- https://github.com/capi789/hold-space-to-talk
 
-local VERSION = 1
+local VERSION = 2
 local REPO_RAW = "https://raw.githubusercontent.com/capi789/hold-space-to-talk/main/"
 local DIR = hs.configdir .. "/hold-space-to-talk"
 local HOLD = 0.35 -- seconds Space must be held before the mic turns on
@@ -174,6 +174,7 @@ end
 
 local function startListening()
   S.holdTimer = nil
+  if S.onStart then pcall(S.onStart) end
   S.app = frontApp()
   local el = findMic(S.app) or S.micEl
   if not el then log("mic not found in " .. tostring(S.app) .. " -> typed a space"); postKey("space"); return end
@@ -238,6 +239,7 @@ local function sendAfterDictation()
       S.sendWait:stop(); S.sendWait = nil
       postKey("return")
       log("sent after dictation")
+      if S.onSent then hs.timer.doAfter(0.3, function() pcall(S.onSent) end) end
     end
   end)
 end
@@ -330,6 +332,9 @@ function S.stop()
   if S.updateEvery then S.updateEvery:stop() end
 end
 S.findMic = findMic
+-- For add-ons (e.g. a key that talks to Claude from any app): start the mic in the front app, or send.
+S.start = startListening
+S.send = sendAfterDictation
 
 hs.autoLaunch(true)
 if not hs.accessibilityState() then
