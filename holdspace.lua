@@ -6,7 +6,7 @@
 -- Updates itself from GitHub. Log: ~/.hammerspoon/hold-space-to-talk/log.txt
 -- https://github.com/capi789/hold-space-to-talk
 
-local VERSION = 2
+local VERSION = 3
 local REPO_RAW = "https://raw.githubusercontent.com/capi789/hold-space-to-talk/main/"
 local DIR = hs.configdir .. "/hold-space-to-talk"
 local HOLD = 0.35 -- seconds Space must be held before the mic turns on
@@ -177,6 +177,10 @@ local function startListening()
   if S.onStart then pcall(S.onStart) end
   S.app = frontApp()
   local el = findMic(S.app) or S.micEl
+  if not el and S.app then -- 2026-10-19: after a Claude update/reload the mic vanished until a restart; turn accessibility back on and look again
+    S.axOnFor[S.app] = nil; el = findMic(S.app)
+    if el then log("mic found after re-enabling accessibility in " .. S.app) end
+  end
   if not el then log("mic not found in " .. tostring(S.app) .. " -> typed a space"); postKey("space"); return end
   S.micEl = el
   if not micOn(el, S.app) then clickMic(el) end
@@ -286,7 +290,12 @@ S.timers = {
   -- Never leave the Mac muted: if the mic isn't on, put the sound back.
   hs.timer.doEvery(3, function() if not S.listening and not S.sendWait then unmuteIfWeMuted("guard") end end),
   -- Keep the mic found in the background so a press never has to search.
-  hs.timer.doEvery(1.5, function() if not S.holdTimer and not S.listening and frontApp() then S.micEl = findMic() end end),
+  hs.timer.doEvery(1.5, function()
+    local name = frontApp()
+    if S.holdTimer or S.listening or not name then return end
+    S.micEl = findMic(name)
+    if not S.micEl then S.axOnFor[name] = nil end -- self-heal: next tick re-enables accessibility (Electron can drop it on reload)
+  end),
   -- Mic turned off another way (a click, Return)? Bring the sound back anyway.
   hs.timer.doEvery(0.5, function()
     if not (S.listening and S.micPt and APPS[S.app]) then return end
