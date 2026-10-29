@@ -40,3 +40,16 @@ curl -fsSL https://raw.githubusercontent.com/capi789/hold-space-to-talk/main/uni
 - Mac only (it uses macOS accessibility to press the app's own mic button).
 - Works with the app's English labels.
 - Log file: `~/.hammerspoon/hold-space-to-talk/log.txt`.
+
+## Windows
+
+Same keys, for the Claude and ChatGPT apps on Windows. It uses Windows voice typing.
+
+1. Install **AutoHotkey v2** (free): https://www.autohotkey.com → Download → v2.0 → install.
+2. Download **[HoldSpaceToTalk.ahk](https://raw.githubusercontent.com/capi789/hold-space-to-talk/main/windows/HoldSpaceToTalk.ahk)** (right-click → Save link as).
+3. Double-click the file. A green **H** shows up by the clock: it's on.
+4. Open Claude, click in the message box, **hold Space** and talk. **Tap Space** to stop, or press **Enter** to send.
+
+To have it start with Windows: press **Windows key + R**, type `shell:startup`, press Enter, and drop the file in that folder.
+
+The first time, Windows may ask to turn on online speech recognition: say yes.
