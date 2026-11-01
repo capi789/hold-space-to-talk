@@ -6,7 +6,7 @@
 -- Updates itself from GitHub. Log: ~/.hammerspoon/hold-space-to-talk/log.txt
 -- https://github.com/capi789/hold-space-to-talk
 
-local VERSION = 3
+local VERSION = 4
 local REPO_RAW = "https://raw.githubusercontent.com/capi789/hold-space-to-talk/main/"
 local DIR = hs.configdir .. "/hold-space-to-talk"
 local HOLD = 0.35 -- seconds Space must be held before the mic turns on
@@ -86,7 +86,7 @@ local function micNearFocus(cfg)
 end
 
 -- Fallback: search only the strip along the bottom of the window (the whole window takes 25s+).
-local function findMic(name)
+local function findMic(name, wide)
   name = name or frontApp()
   local cfg = name and APPS[name]
   local app = name and hs.application.get(name)
@@ -97,7 +97,7 @@ local function findMic(name)
   local win = w and hs.axuielement.windowElement(w)
   local wf = win and attr(win, "AXFrame")
   if not wf then return nil end
-  local zoneTop = wf.y + wf.h - 220
+  local zoneTop = wide and -math.huge or wf.y + wf.h - 220 -- wide: only on a press, never in the 1.5s poll
   local found, seen = nil, 0
   local function walk(el, depth)
     if found or depth > 60 or seen > 4000 then return end
@@ -172,16 +172,18 @@ local function postKey(key)
   end
 end
 
-local function startListening()
+local function startListening(try)
+  try = try or 1
   S.holdTimer = nil
-  if S.onStart then pcall(S.onStart) end
+  if try == 1 and S.onStart then pcall(S.onStart) end
   S.app = frontApp()
-  local el = findMic(S.app) or S.micEl
+  local el = findMic(S.app, try > 1) or (try == 1 and S.micEl or nil)
   if not el and S.app then -- 2026-10-19: after a Claude update/reload the mic vanished until a restart; turn accessibility back on and look again
     S.axOnFor[S.app] = nil; el = findMic(S.app)
     if el then log("mic found after re-enabling accessibility in " .. S.app) end
   end
-  if not el then log("mic not found in " .. tostring(S.app) .. " -> typed a space"); postKey("space"); return end
+  if not el and try < 6 then hs.timer.doAfter(0.25, function() startListening(try + 1) end); return end -- 2026-11-01: the mic can drop out for seconds
+  if not el then log("mic not found in " .. tostring(S.app) .. " -> typed a space"); hs.alert.show("Couldn't find the mic. Click the message box and hold Space again."); postKey("space"); return end
   S.micEl = el
   if not micOn(el, S.app) then clickMic(el) end
   S.listening, S.since, S.seenOn = true, hs.timer.secondsSinceEpoch(), false
@@ -192,6 +194,18 @@ local function startListening()
     if not (S.listening and S.micPt and APPS[S.app]) then return end
     local d = attr(hs.axuielement.systemElementAtPosition(S.micPt), "AXDescription")
     if d and d ~= "" and not APPS[S.app].off[d] and not APPS[S.app].on[d] then APPS[S.app].on[d] = true; log("learned on-label: " .. d) end
+    -- The click didn't take (the button moved or the app was busy): find it fresh and click once more.
+    if d and APPS[S.app].off[d] and not S.seenOn then
+      local again = findMic(S.app, true)
+      if again then log("mic didn't turn on, clicking again"); S.micEl = again; clickMic(again) end
+    end
+  end)
+  hs.timer.doAfter(2, function()
+    if not (S.listening and S.micPt and APPS[S.app]) or S.seenOn then return end
+    local d = attr(hs.axuielement.systemElementAtPosition(S.micPt), "AXDescription")
+    if d and APPS[S.app].off[d] then
+      S.listening = false; log("mic never turned on"); hs.alert.show("The mic didn't turn on. Hold Space again."); hs.timer.doAfter(0.1, loud)
+    end
   end)
 end
 
@@ -308,6 +322,17 @@ S.timers = {
   end),
   -- macOS switches a key listener off if it's ever slow; switch it back on.
   hs.timer.doEvery(2, function() if not S.tap:isEnabled() then S.tap:start(); log("listener re-enabled") end end),
+  -- 2026-11-01: a focused password box (usually Chrome) turns on macOS Secure Input, which hides every key from us,
+  -- so Space just types spaces and nothing is logged. We can't get past it, so say so on screen until it clears.
+  hs.timer.doEvery(1, function()
+    local blocked = frontApp() and hs.eventtap.isSecureInputEnabled()
+    if blocked and not S.secureAlert then
+      log("blocked: macOS Secure Input is on (a password box has the keyboard)")
+      S.secureAlert = hs.alert.show("Hold Space is blocked: a password box has the keyboard.\nClick off it in Chrome, or close that tab.", 86400)
+    elseif not blocked and S.secureAlert then
+      hs.alert.closeSpecific(S.secureAlert); S.secureAlert = nil; log("Secure Input cleared")
+    end
+  end),
 }
 
 -- Auto-update: check GitHub at start and every 6 hours; install a newer version and reload.
@@ -334,6 +359,7 @@ S.updateTimer = hs.timer.doAfter(10, checkForUpdate)
 S.updateEvery = hs.timer.doEvery(6 * 3600, checkForUpdate)
 
 function S.stop()
+  if S.secureAlert then hs.alert.closeSpecific(S.secureAlert); S.secureAlert = nil end
   if S.tap then S.tap:stop() end
   if S.appWatch then S.appWatch:stop() end
   for _, t in ipairs(S.timers or {}) do t:stop() end
