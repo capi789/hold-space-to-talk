@@ -6,7 +6,7 @@
 -- Updates itself from GitHub. Log: ~/.hammerspoon/hold-space-to-talk/log.txt
 -- https://github.com/capi789/hold-space-to-talk
 
-local VERSION = 4
+local VERSION = 5
 local REPO_RAW = "https://raw.githubusercontent.com/capi789/hold-space-to-talk/main/"
 local DIR = hs.configdir .. "/hold-space-to-talk"
 local HOLD = 0.35 -- seconds Space must be held before the mic turns on
@@ -119,6 +119,7 @@ local function micOn(el, name)
 end
 
 local function clickAt(pt)
+  S.ourClick = true; hs.timer.doAfter(0.3, function() S.ourClick = false end)
   local back = hs.mouse.absolutePosition()
   hs.mouse.absolutePosition(pt)
   hs.eventtap.event.newMouseEvent(T.leftMouseDown, pt):setProperty(P.mouseEventClickState, 1):post()
@@ -185,15 +186,23 @@ local function startListening(try)
   if not el and try < 6 then hs.timer.doAfter(0.25, function() startListening(try + 1) end); return end -- 2026-11-01: the mic can drop out for seconds
   if not el then log("mic not found in " .. tostring(S.app) .. " -> typed a space"); hs.alert.show("Couldn't find the mic. Click the message box and hold Space again."); postKey("space"); return end
   S.micEl = el
+  local focused = attr(hs.axuielement.systemWideElement(), "AXFocusedUIElement")
+  local frole = focused and attr(focused, "AXRole")
+  S.textEl = (frole == "AXTextArea" or frole == "AXTextField") and focused or nil
   if not micOn(el, S.app) then clickMic(el) end
   S.listening, S.since, S.seenOn = true, hs.timer.secondsSinceEpoch(), false
+  if try == 1 and not S.resuming then S.restarts = 0 end
   log("mic ON in " .. tostring(S.app))
   quiet()
   -- Learn what this app calls its mic while listening, in case an update renamed it.
   hs.timer.doAfter(0.8, function()
     if not (S.listening and S.micPt and APPS[S.app]) then return end
     local d = attr(hs.axuielement.systemElementAtPosition(S.micPt), "AXDescription")
-    if d and d ~= "" and not APPS[S.app].off[d] and not APPS[S.app].on[d] then APPS[S.app].on[d] = true; log("learned on-label: " .. d) end
+    -- 2026-11-03: it once learned "Desktop" (another button under the click spot) and then treated that as the mic.
+    local low = d and d:lower() or ""
+    if d and not APPS[S.app].off[d] and not APPS[S.app].on[d] and (low:find("dictat") or (low:find("stop") and low:find("record"))) then
+      APPS[S.app].on[d] = true; log("learned on-label: " .. d)
+    end
     -- The click didn't take (the button moved or the app was busy): find it fresh and click once more.
     if d and APPS[S.app].off[d] and not S.seenOn then
       local again = findMic(S.app, true)
@@ -220,6 +229,7 @@ end
 
 -- The message box's text, to see when dictated words have finished arriving.
 local function promptText()
+  if S.textEl then local v = attr(S.textEl, "AXValue"); if v ~= nil then return tostring(v) end end
   local focused = attr(hs.axuielement.systemWideElement(), "AXFocusedUIElement")
   local role = focused and attr(focused, "AXRole")
   if role == "AXTextArea" or role == "AXTextField" then return tostring(attr(focused, "AXValue") or "") end
@@ -256,13 +266,17 @@ local function sendAfterDictation()
     if (arrived and now - stableSince >= 0.8) or (hasText and now - stableSince >= 1.5) or now - started > 12 then
       S.sendWait:stop(); S.sendWait = nil
       postKey("return")
-      log("sent after dictation")
+      log(string.format("sent after dictation (%s, %.1fs)", arrived and "words landed" or "no new words seen", now - started))
       if S.onSent then hs.timer.doAfter(0.3, function() pcall(S.onSent) end) end
     end
   end)
 end
 
-S.tap = hs.eventtap.new({ T.keyDown, T.keyUp }, function(e)
+S.tap = hs.eventtap.new({ T.keyDown, T.keyUp, T.leftMouseDown }, function(e)
+  if e:getType() == T.leftMouseDown then
+    if not S.ourClick then S.userClickAt = hs.timer.secondsSinceEpoch() end
+    return false
+  end
   local code, down = e:getKeyCode(), e:getType() == T.keyDown
   if e:getProperty(P.eventSourceUserData) == MINE then return false end
   if code == RETURN and down and S.listening then
@@ -317,7 +331,17 @@ S.timers = {
     if not d then return end
     if APPS[S.app].on[d] then S.seenOn = true return end
     if APPS[S.app].off[d] and S.seenOn and hs.timer.secondsSinceEpoch() - (S.since or 0) > 1.5 then
-      S.listening = false; log("mic went off elsewhere"); hs.timer.doAfter(0.3, loud)
+      local clicked = S.userClickAt and hs.timer.secondsSinceEpoch() - S.userClickAt < 1.5
+      -- 2026-11-03: Claude's mic sometimes stops by itself mid-sentence and the rest of what you say is lost.
+      -- If you didn't click it off yourself, click it straight back on (up to 5 times per dictation).
+      if not clicked and (S.restarts or 0) < 5 and frontApp() == S.app then
+        S.restarts = (S.restarts or 0) + 1
+        log("mic stopped by itself -> turned back on (" .. S.restarts .. ")")
+        S.seenOn, S.since = false, hs.timer.secondsSinceEpoch()
+        clickAt(S.micPt)
+        return
+      end
+      S.listening = false; log("mic went off elsewhere" .. (clicked and " (you clicked)" or "")); hs.timer.doAfter(0.3, loud)
     end
   end),
   -- macOS switches a key listener off if it's ever slow; switch it back on.
